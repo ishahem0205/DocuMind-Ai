@@ -9,9 +9,6 @@
 
 ---
 # DocuMind AI: Intelligent Document Analysis & Fraud Detection System
-**Capstone Project Report**
-
----
 
 ## Abstract
 **DocuMind AI** is a next-generation web application designed to revolutionize how individuals and organizations interact with documents. Leveraging the power of Google's **Gemini 2.5 Flash** model, the system provides real-time Optical Character Recognition (OCR), intelligent summarization, automated fraud detection, and semantic document comparison. This project addresses the critical need for efficient, accurate, and secure document processing in an era of information overload. By combining a modern, high-performance frontend with state-of-the-art Large Language Model (LLM) capabilities, DocuMind AI offers a seamless solution for extracting insights and verifying the authenticity of digital documents.
