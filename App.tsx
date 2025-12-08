@@ -8,7 +8,8 @@ import {
   Github,
   Brain,
   User as UserIcon,
-  LogOut
+  LogOut,
+  CreditCard
 } from 'lucide-react';
 
 import { FileUpload } from './components/FileUpload';
@@ -17,20 +18,27 @@ import { ChatInterface } from './components/ChatInterface';
 import { SimilarityView } from './components/SimilarityView';
 import { analyzeDocument } from './services/geminiService';
 import { AnalysisResult, AnalysisStatus, UploadedFile, ChatMessage, User } from './types';
-import { Auth, Subscription, Onboarding, HelpCenter, Feedback, AdminFeedback } from './components';
 
-function App() {
-  const [activeTab, setActiveTab] = useState<'analyze' | 'chat' | 'compare'>('analyze');
+import { Auth } from './components/Auth';
+import { Onboarding } from './components/Onboarding';
+import { HelpCenter } from './components/HelpCenter';
+import Feedback from './components/Feedback';
+import AdminFeedback from './components/AdminFeedback';
+
+// Direct imports to avoid barrel/export mismatches
+import { SubscriptionProvider, useSubscription } from './components/SubscriptionContext';
+import Subscription from './components/Subscription';
+import PricingPage from './components/PricingPage';
+import PaymentModal from './components/PaymentModal';
+
+function AppInner() {
+  const [activeTab, setActiveTab] = useState<'analyze' | 'chat' | 'compare' | 'pricing'>('analyze');
   const [file, setFile] = useState<UploadedFile | null>(null);
   const [status, setStatus] = useState<AnalysisStatus>(AnalysisStatus.IDLE);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-
-  // NEW: sidebar collapsed state (desktop compact mode)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-
-  // Keep chat sessions per-file
   const [chatSessions, setChatSessions] = useState<Record<string, ChatMessage[]>>({});
 
   // Auth & subscription state
@@ -39,10 +47,12 @@ function App() {
   const [authMode, setAuthMode] = useState<'signup' | 'login'>('signup');
   const [showSubscription, setShowSubscription] = useState(false);
 
-  // Onboarding state (show on first run)
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  // Payment modal (pricing flow)
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentPlan, setPaymentPlan] = useState<'standard' | 'pro'>('standard');
 
-  // Help / Feedback / Admin modals
+  // Onboarding & other modals
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [showAdminFeedback, setShowAdminFeedback] = useState(false);
@@ -50,7 +60,9 @@ function App() {
 
   const storageKeyForFile = (fileName: string) => `docuChat:${fileName}`;
 
-  // Load user from localStorage on mount
+  // SubscriptionContext (sync to local user object)
+  const { currentPlan, creditsRemaining, isSubscribed } = useSubscription();
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem('docuUser');
@@ -62,16 +74,13 @@ function App() {
     }
   }, []);
 
-  // Check onboarding flag on mount
   useEffect(() => {
     try {
       const seen = localStorage.getItem('docuOnboardSeen');
       if (!seen) {
         setShowOnboarding(true);
       }
-    } catch (err) {
-      // ignore
-    }
+    } catch (err) {}
   }, []);
 
   // Persist user whenever it changes
@@ -84,15 +93,24 @@ function App() {
     }
   }, [user]);
 
+  // Sync subscription context into the persisted `user` so credits and subscribed flag stay consistent
+  useEffect(() => {
+    if (!user) return;
+    setUser(prev => {
+      if (!prev) return prev;
+      const updated = { ...prev, subscribed: isSubscribed, credits: creditsRemaining };
+      try { localStorage.setItem('docuUser', JSON.stringify(updated)); } catch (e) {}
+      return updated;
+    });
+  }, [isSubscribed, creditsRemaining]);
+
   const handleAnalyze = async (uploadedFile: UploadedFile) => {
-    // Require login
     if (!user) {
       setAuthMode('signup');
       setShowAuth(true);
       return;
     }
 
-    // If not subscribed and no credits, prompt subscription
     if (!user.subscribed && user.credits <= 0) {
       setShowSubscription(true);
       return;
@@ -109,7 +127,6 @@ function App() {
       setResult(data);
       setStatus(AnalysisStatus.COMPLETED);
 
-      // Initialize chat session messages for this file from localStorage (if any)
       const key = storageKeyForFile(uploadedFile.file.name);
       const saved = localStorage.getItem(key);
       if (saved) {
@@ -118,11 +135,9 @@ function App() {
           const restored = parsed.map(m => ({ role: m.role, text: m.text, timestamp: new Date(m.timestamp) }));
           setChatSessions(prev => ({ ...prev, [uploadedFile.file.name]: restored }));
         } catch (err) {
-          console.error('Failed to parse saved chat for initialization', err);
           setChatSessions(prev => ({ ...prev, [uploadedFile.file.name]: [] }));
         }
       } else {
-        // Prime with a greeting message from the model
         setChatSessions(prev => ({
           ...prev,
           [uploadedFile.file.name]: [
@@ -196,144 +211,261 @@ function App() {
     { id: 'analyze', label: 'Dashboard & Analysis', icon: LayoutDashboard },
     { id: 'chat', label: 'Chat with Document', icon: MessageSquareText },
     { id: 'compare', label: 'Similarity Check', icon: Files },
+    { id: 'pricing', label: 'Pricing', icon: CreditCard },
   ] as const;
 
-  // Landing / Home for unauthenticated users
-  const Landing = () => (
-    <div className="min-h-[70vh] flex flex-col items-center justify-center text-center space-y-6">
-      <div className="max-w-3xl">
-        <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">DocuMind — AI Document Intelligence</h1>
-        <p className="text-slate-400 text-lg mb-6">
-          Extract insights, detect fraud, summarize documents, and chat with your files — powered by advanced AI.
-        </p>
+  // Landing component for unauthenticated users
+  const Landing = () => {
+    const [typed, setTyped] = React.useState('');
+    const fullText = 'Extract insights, detect fraud, summarize documents, and chat with your files — powered by advanced AI.';
+    React.useEffect(() => {
+      let i = 0;
+      let mounted = true;
+      const tick = () => {
+        if (!mounted) return;
+        if (i <= fullText.length) {
+          setTyped(fullText.slice(0, i));
+          i += 1;
+          setTimeout(tick, 28);
+        }
+      };
+      tick();
+      return () => { mounted = false; };
+    }, []);
 
-        <div className="flex items-center justify-center gap-4">
-          <button
-            onClick={() => { setAuthMode('signup'); setShowAuth(true); }}
-            className="px-8 py-3 bg-emerald-500 text-black rounded font-semibold hover:bg-emerald-400"
-          >
-            Get Started
-          </button>
-          <button
-            onClick={() => { setAuthMode('login'); setShowAuth(true); }}
-            className="px-6 py-3 bg-slate-800 text-slate-200 rounded border border-slate-700 hover:bg-slate-700"
-          >
-            Sign In
-          </button>
-        </div>
-      </div>
+    const handleGetStarted = () => {
+      setAuthMode('signup');
+      setShowAuth(true);
+    };
 
-      <div className="w-full max-w-4xl mt-12 grid gap-6 grid-cols-1 md:grid-cols-3">
-        <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
-          <h3 className="text-blue-400 font-semibold mb-2">Smart OCR</h3>
-          <p className="text-slate-400 text-sm">Extract text from PDFs and images accurately.</p>
-        </div>
-        <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
-          <h3 className="text-blue-400 font-semibold mb-2">Fraud Detection</h3>
-          <p className="text-slate-400 text-sm">Detect signs of tampering and anomalies.</p>
-        </div>
-        <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
-          <h3 className="text-blue-400 font-semibold mb-2">Contextual Chat</h3>
-          <p className="text-slate-400 text-sm">Ask questions about your documents instantly.</p>
-        </div>
-      </div>
+    const handleSignIn = () => {
+      setAuthMode('login');
+      setShowAuth(true);
+    };
 
-      <div className="max-w-4xl mt-10 text-slate-500 text-sm">
-        <h4 className="text-slate-200 font-semibold mb-2">About</h4>
-<section className="max-w-4xl mx-auto p-6 leading-relaxed">
-  <h1 className="text-3xl font-bold mb-4">About DocuMind AI</h1>
+    const handleSubscribeOpen = () => {
+      if (!user) {
+        setAuthMode('signup');
+        setShowAuth(true);
+        return;
+      }
+      setShowSubscription(true);
+    };
 
-  <h2 className="text-2xl font-semibold mt-6 mb-2">Our Mission</h2>
-  <p>
-    DocuMind AI exists to make understanding documents effortless. In a world overflowing with 
-    information, we focus on clarity — transforming long pages, complex reports, and messy PDFs 
-    into clean, sharp insights. Our mission is simple: help people learn faster, work smarter, 
-    and think deeper.
-  </p>
+    return (
+      <div className="min-h-[70vh] flex flex-col items-center justify-center text-center space-y-6">
+        <div className="max-w-3xl">
+          <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">DocuMind AI – See Beyond the Text</h1>
+          <p className="text-slate-400 text-lg mb-3">
+            <span>{typed}</span>
+            <span className="ml-1 inline-block w-1 bg-slate-200 animate-pulse align-middle" style={{ height: 18 }} />
+          </p>
 
-  <h2 className="text-2xl font-semibold mt-6 mb-2">Who We Are</h2>
-  <p>
-    We're a homegrown team from Dhaka, Bangladesh, built by three curious minds: 
-    <strong> Shahriar Hasan</strong>, <strong> Shukriyan Ahamed</strong>, and 
-    <strong> Samir Uddin</strong>. A shared belief drives us — that students and researchers 
-    deserve tools that actually save time instead of wasting it.
-  </p>
-  <p className="mt-2">
-    We're builders with a traditional work ethic and a future-focused vision. We believe in clean 
-    design, honest results, and tech that feels like a helping hand — not a headache.
-  </p>
-
-  <h2 className="text-2xl font-semibold mt-6 mb-2">Our Approach</h2>
-  <p>DocuMind combines proven analysis logic with modern AI power. We keep things:</p>
-
-  <ul className="list-disc pl-6 mt-2 space-y-1">
-    <li><strong>Fast</strong> — results in seconds</li>
-    <li><strong>Accurate</strong> — built for trust</li>
-    <li><strong>Multi-format ready</strong> — PDF, DOCX, images, and more</li>
-    <li><strong>Private</strong> — your data stays yours</li>
-    <li><strong>Simple</strong> — no learning curve, no complication</li>
-  </ul>
-
-  <h2 className="text-2xl font-semibold mt-6 mb-2">Leadership</h2>
-  <p>
-    Shahriar, Shukriyan, and Samir lead DocuMind with a grounded and practical mindset — asking 
-    tough questions, demanding real results, and refusing shortcuts. Their vision drives the 
-    platform forward.
-  </p>
-
-  <h2 className="text-2xl font-semibold mt-6 mb-2">Our Values</h2>
-  <ul className="list-disc pl-6 space-y-1">
-    <li><strong>Privacy First</strong> — your documents stay secure.</li>
-    <li><strong>Speed With Purpose</strong> — fast and meaningful answers.</li>
-    <li><strong>Clarity Over Complexity</strong> — no clutter, just insight.</li>
-    <li><strong>Built for People</strong> — real users, real impact.</li>
-    <li><strong>Empower Learning</strong> — technology that helps people grow.</li>
-    <li><strong>Always Improving</strong> — evolving with every update.</li>
-  </ul>
-
-  <h2 className="text-2xl font-semibold mt-6 mb-2">Join Our Team</h2>
-  <p>
-    We're building the future of document understanding — one idea at a time. If you love tech, 
-    design, or solving meaningful problems, we’d love to connect. DocuMind AI is more than a 
-    platform; it's a growing community of curious thinkers.
-  </p>
-</section>
-      </div>
-
-      {/* NEW: After About - Two-column Legal / Learn More */}
-      <div className="w-full max-w-4xl mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
-          <h3 className="text-blue-400 font-semibold mb-3">Legal</h3>
-          <ul className="text-slate-300 space-y-2 text-sm list-disc list-inside">
-            <li>Privacy Policy</li>
-            <li>Terms and Conditions</li>
-            <li>Disclaimer</li>
-            <li>Payment Policy (Billing Policy)</li>
-            <li>Security & Data Trust (Data Privacy / Security)</li>
-          </ul>
-          <p className="text-slate-400 text-xs mt-3">These documents explain user rights, data handling, billing and legal disclaimers for using DocuMind AI.</p>
+          <div className="flex items-center justify-center gap-4">
+            <button
+              onClick={handleGetStarted}
+              className="px-8 py-3 bg-emerald-500 text-black rounded font-semibold hover:bg-emerald-400"
+            >
+              Get Started
+            </button>
+            <button
+              onClick={handleSignIn}
+              className="px-6 py-3 bg-slate-800 text-slate-200 rounded border border-slate-700 hover:bg-slate-700"
+            >
+              Sign In
+            </button>
+          </div>
         </div>
 
-        <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
-          <h3 className="text-blue-400 font-semibold mb-3">Learn More</h3>
-          <ul className="text-slate-300 space-y-2 text-sm list-disc list-inside">
-            <li>FAQ</li>
-            <li>Tutorials</li>
-            <li>Blog</li>
-            <li>API Reference</li>
-            <li>Contact Us / Support</li>
-            <li>Roadmap</li>
-          </ul>
-          <p className="text-slate-400 text-xs mt-3">Helpful resources to get the most out of DocuMind — documentation, guides, and support channels.</p>
+        <div className="w-full max-w-4xl mt-12 grid gap-6 grid-cols-1 md:grid-cols-3">
+          <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
+            <h3 className="text-blue-400 font-semibold mb-2">Smart OCR</h3>
+            <p className="text-slate-400 text-sm">Extract text from PDFs and images accurately.</p>
+          </div>
+          <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
+            <h3 className="text-blue-400 font-semibold mb-2">Fraud Detection</h3>
+            <p className="text-slate-400 text-sm">Detect signs of tampering and anomalies.</p>
+          </div>
+          <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
+            <h3 className="text-blue-400 font-semibold mb-2">Contextual Chat</h3>
+            <p className="text-slate-400 text-sm">Ask questions about your documents instantly.</p>
+          </div>
         </div>
-      </div>
+
+        {/* Pricing Section */}
+        <div className="w-full max-w-4xl mt-12">
+          <h2 className="text-2xl font-bold text-white mb-4">Pricing</h2>
+          <p className="text-slate-400 text-sm mb-6">Choose a plan that fits your workflow — billing shown is a demo only.</p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-slate-800 p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Free</h3>
+                  <p className="text-slate-400 text-sm">Starter tier for casual use</p>
+                </div>
+                <div className="text-2xl font-bold text-emerald-400">Free</div>
+              </div>
+              <ul className="mt-4 text-slate-300 text-sm space-y-2">
+                <li>• 5 credits</li>
+                <li>• Basic OCR & summaries</li>
+                <li>• Chat with single document</li>
+              </ul>
+              <div className="mt-4">
+                <button
+                  onClick={handleGetStarted}
+                  className="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 py-2 rounded"
+                >
+                  Get Free
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-slate-800 p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Standard</h3>
+                  <p className="text-slate-400 text-sm">For frequent document users</p>
+                </div>
+                <div className="text-2xl font-bold text-blue-400">$9.99</div>
+              </div>
+              <ul className="mt-4 text-slate-300 text-sm space-y-2">
+                <li>• 100 credits / month</li>
+                <li>• Priority analysis</li>
+                <li>• Similarity checks</li>
+              </ul>
+              <div className="mt-4">
+                <button
+                  onClick={() => { if (!user) { setAuthMode('signup'); setShowAuth(true); return; } setPaymentPlan('standard'); setShowPaymentModal(true); }}
+                  className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded"
+                >
+                  Choose Standard
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-slate-800 p-6 rounded-lg border border-slate-700">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Pro</h3>
+                  <p className="text-slate-400 text-sm">For teams and heavy use</p>
+                </div>
+                <div className="text-2xl font-bold text-emerald-400">$19.99</div>
+              </div>
+              <ul className="mt-4 text-slate-300 text-sm space-y-2">
+                <li>• 1000 credits / month</li>
+                <li>• Highest priority & SLA (demo)</li>
+                <li>• Advanced fraud reports</li>
+              </ul>
+              <div className="mt-4">
+                <button
+                  onClick={() => { if (!user) { setAuthMode('signup'); setShowAuth(true); return; } setPaymentPlan('pro'); setShowPaymentModal(true); }}
+                  className="w-full bg-emerald-500 hover:bg-emerald-400 text-black py-2 rounded"
+                >
+                  Choose Pro
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+       <div className="max-w-4xl mt-10 text-slate-500 text-sm">
+  <h4 className="text-slate-200 font-semibold mb-2">About</h4>
+  <section className="max-w-4xl mx-auto p-6 leading-relaxed">
+    <h1 className="text-3xl font-bold mb-4">About DocuMind AI</h1>
+
+    <h2 className="text-2xl font-semibold mt-6 mb-2">Our Mission</h2>
+    <p>
+      DocuMind AI exists to make understanding documents effortless. In a world overflowing with 
+      information, we focus on clarity — transforming long pages, complex reports, and messy PDFs 
+      into clean, sharp insights. Our mission is simple: help people learn faster, work smarter, 
+      and think deeper.
+    </p>
+
+    <h2 className="text-2xl font-semibold mt-6 mb-2">Who We Are</h2>
+    <p>
+      We're a homegrown team from Dhaka, Bangladesh, built by three curious minds: 
+      <strong> Shahriar Hasan</strong>, <strong> Shukriyan Ahamed</strong>, and 
+      <strong> Samir Uddin</strong>. A shared belief drives us — that students and researchers 
+      deserve tools that actually save time instead of wasting it.
+    </p>
+    <p className="mt-2">
+      We're builders with a traditional work ethic and a future-focused vision. We believe in clean 
+      design, honest results, and tech that feels like a helping hand — not a headache.
+    </p>
+
+    <h2 className="text-2xl font-semibold mt-6 mb-2">Our Approach</h2>
+    <p>
+      DocuMind combines proven analysis logic with modern AI power. We keep things:
+    </p>
+    <ul className="list-disc pl-6 mt-2 space-y-1">
+      <li><strong>Fast</strong> — results in seconds</li>
+      <li><strong>Accurate</strong> — built for trust</li>
+      <li><strong>Multi-format ready</strong> — PDF, DOCX, images, and more</li>
+      <li><strong>Private</strong> — your data stays yours</li>
+      <li><strong>Simple</strong> — no learning curve, no complication</li>
+    </ul>
+
+    <h2 className="text-2xl font-semibold mt-6 mb-2">Leadership</h2>
+    <p>
+      Shahriar, Shukriyan, and Samir lead DocuMind with a grounded and practical mindset — asking 
+      tough questions, demanding real results, and refusing shortcuts. Their vision drives the 
+      platform forward.
+    </p>
+
+    <h2 className="text-2xl font-semibold mt-6 mb-2">Our Values</h2>
+    <ul className="list-disc pl-6 space-y-1">
+      <li><strong>Privacy First</strong> — your documents stay secure.</li>
+      <li><strong>Speed With Purpose</strong> — fast and meaningful answers.</li>
+      <li><strong>Clarity Over Complexity</strong> — no clutter, just insight.</li>
+      <li><strong>Built for People</strong> — real users, real impact.</li>
+      <li><strong>Empower Learning</strong> — technology that helps people grow.</li>
+      <li><strong>Always Improving</strong> — evolving with every update.</li>
+    </ul>
+
+    <h2 className="text-2xl font-semibold mt-6 mb-2">Join Our Team</h2>
+    <p>
+      We're building the future of document understanding — one idea at a time. If you love tech, 
+      design, or solving meaningful problems, we’d love to connect. DocuMind AI is more than a 
+      platform; it's a growing community of curious thinkers.
+    </p>
+
+    <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700 flex items-center gap-2 mt-4">
+      <span className="text-lg">📧</span>
+      <a href="mailto:porjectcse1@gmail.com" className="text-blue-400 hover:text-blue-300 underline text-sm font-medium">
+        porjectcse1@gmail.com
+      </a>
     </div>
-  );
+  </section>
+</div>
+
+        <div className="w-full max-w-4xl mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
+            <h3 className="text-blue-400 font-semibold mb-3">Legal</h3>
+            <ul className="text-slate-300 space-y-2 text-sm list-disc list-inside">
+              <li>Privacy Policy</li>
+              <li>Terms and Conditions</li>
+              <li>Disclaimer</li>
+            </ul>
+            <p className="text-slate-400 text-xs mt-3">These documents explain user rights, data handling, billing and legal disclaimers for using DocuMind AI.</p>
+          </div>
+
+          <div className="bg-slate-800/40 p-6 rounded-lg border border-slate-700">
+            <h3 className="text-blue-400 font-semibold mb-3">Learn More</h3>
+            <ul className="text-slate-300 space-y-2 text-sm list-disc list-inside">
+              <li>FAQ</li>
+              <li>Tutorials</li>
+              <li>Blog</li>
+            </ul>
+            <p className="text-slate-400 text-xs mt-3">Helpful resources to get the most out of DocuMind — documentation, guides, and support channels.</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-screen bg-slate-900 text-slate-100 overflow-hidden">
-
-      {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
         <div
           className="fixed inset-0 bg-black/50 z-20 lg:hidden"
@@ -341,17 +473,15 @@ function App() {
         />
       )}
 
-      {/* Sidebar */}
       <aside className={`
         fixed inset-y-0 left-0 z-30 bg-slate-950 border-r border-slate-800 transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static flex flex-col
         ${isSidebarCollapsed ? 'w-20' : 'w-64'}
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
 
-        {/* Header with brand + collapse toggle */}
         <div className="p-4 border-b border-slate-800 flex items-center gap-3 justify-between">
           <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-lg ${isSidebarCollapsed ? 'bg-gradient-to-tr from-blue-600 to-emerald-500' : 'bg-gradient-to-tr from-blue-600 to-emerald-500'}`}>
+            <div className={`p-2 rounded-lg bg-gradient-to-tr from-blue-600 to-emerald-500`}>
               <Brain className="text-white h-5 w-5" />
             </div>
             <h1 className={`text-lg font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent ${isSidebarCollapsed ? 'hidden' : 'block'}`}>
@@ -360,7 +490,6 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Collapse toggle (desktop) */}
             <button
               title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               onClick={() => setIsSidebarCollapsed(prev => !prev)}
@@ -369,7 +498,6 @@ function App() {
               <Menu size={16} />
             </button>
 
-            {/* Mobile menu toggle */}
             <button
               className="lg:hidden p-2 rounded hover:bg-slate-900/50"
               onClick={() => setIsSidebarOpen(open => !open)}
@@ -385,7 +513,7 @@ function App() {
             <button
               key={item.id}
               onClick={() => {
-                setActiveTab(item.id);
+                setActiveTab(item.id as any);
                 setIsSidebarOpen(false);
               }}
               title={item.label}
@@ -400,7 +528,6 @@ function App() {
             </button>
           ))}
 
-          {/* Extra pages */}
           <div className="mt-4 border-t border-slate-800 pt-4 space-y-2 px-1">
             <button
               onClick={() => { setShowAbout(true); setIsSidebarOpen(false); }}
@@ -408,7 +535,6 @@ function App() {
               className="w-full text-left text-slate-400 hover:text-slate-200 text-sm px-3 py-2 rounded"
             >
               <span className={`${isSidebarCollapsed ? 'hidden' : 'inline'}`}>About</span>
-              {isSidebarCollapsed && <span className="sr-only">About</span>}
             </button>
             <button
               onClick={() => { setShowHelp(true); setIsSidebarOpen(false); }}
@@ -416,7 +542,6 @@ function App() {
               className="w-full text-left text-slate-400 hover:text-slate-200 text-sm px-3 py-2 rounded"
             >
               <span className={`${isSidebarCollapsed ? 'hidden' : 'inline'}`}>Help Center</span>
-              {isSidebarCollapsed && <span className="sr-only">Help Center</span>}
             </button>
             <button
               onClick={() => {
@@ -428,7 +553,6 @@ function App() {
               className="w-full text-left text-slate-400 hover:text-slate-200 text-sm px-3 py-2 rounded"
             >
               <span className={`${isSidebarCollapsed ? 'hidden' : 'inline'}`}>Feedback</span>
-              {isSidebarCollapsed && <span className="sr-only">Feedback</span>}
             </button>
 
             {user && user.isAdmin && (
@@ -438,7 +562,6 @@ function App() {
                 title="Admin: View Feedback"
               >
                 <span className={`${isSidebarCollapsed ? 'hidden' : 'inline'}`}>Admin: View Feedback</span>
-                {isSidebarCollapsed && <span className="sr-only">Admin Feedback</span>}
               </button>
             )}
           </div>
@@ -493,18 +616,17 @@ function App() {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
         <div className="flex-1 overflow-y-auto p-4 lg:p-8 scrollbar-hide">
           <div className="max-w-5xl mx-auto space-y-6">
-            {/* If no user, show public Landing/Home */}
             {!user ? (
               <Landing />
             ) : (
-              // Authenticated view (existing analyze/compare/chat UI)
               <>
                 {activeTab === 'compare' ? (
                   <SimilarityView />
+                ) : activeTab === 'pricing' ? (
+                  <PricingPage onOpenPayment={(plan) => { setPaymentPlan(plan); setShowPaymentModal(true); }} />
                 ) : (
                   <>
                     {(!file || status === AnalysisStatus.IDLE) && (
@@ -643,11 +765,17 @@ function App() {
         <Subscription
           user={user}
           onClose={() => setShowSubscription(false)}
-          onSubscribe={() => handleSubscribeSuccess({ creditsGranted: 100 })}
+          onSubscribe={(opts) => handleSubscribeSuccess(opts)}
         />
       )}
 
-      {/* Onboarding shown on first run */}
+      {showPaymentModal && (
+        <PaymentModal
+          initialPlan={paymentPlan}
+          onClose={() => setShowPaymentModal(false)}
+        />
+      )}
+
       {showOnboarding && (
         <Onboarding
           onClose={() => {
@@ -662,7 +790,6 @@ function App() {
         />
       )}
 
-      {/* Help Center modal */}
       {showHelp && (
         <HelpCenter
           onClose={() => setShowHelp(false)}
@@ -675,7 +802,6 @@ function App() {
         />
       )}
 
-      {/* About modal */}
       {showAbout && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-lg w-full max-w-2xl p-6 my-8">
@@ -688,69 +814,9 @@ function App() {
               <section>
                 <h3 className="text-blue-400 font-semibold text-lg mb-2">Our Mission</h3>
                 <p>
-                  DocuMind AI exists to make understanding documents effortless. In a world overflowing with information, we focus on clarity — transforming long pages, complex reports, and messy PDFs into clean, sharp insights. Our mission is simple: help people learn faster, work smarter, and think deeper.
+                  DocuMind AI exists to make understanding documents effortless. In a world overflowing with information, we focus on clarity — transforming long pages, complex reports, and messy PDFs into clean, sharp insights.
                 </p>
               </section>
-
-              <section>
-                <h3 className="text-blue-400 font-semibold text-lg mb-2">Who We Are</h3>
-                <p>
-                  We're a homegrown team from Dhaka, Bangladesh, built by three curious minds: Shahriar Hasan, Shukriyan Ahamed, and Samir Uddin. What brought us together? A shared belief that students and researchers deserve tools that actually save time instead of wasting it.
-                </p>
-                <p className="mt-2">
-                  We're builders with a traditional work ethic and a future-focused vision. We love clean design, honest results, and technology that feels like a helping hand — not a headache.
-                </p>
-              </section>
-
-              <section>
-                <h3 className="text-blue-400 font-semibold text-lg mb-2">Our Approach</h3>
-                <p>
-                  DocuMind blends the stability of time-tested analysis methods with the speed and intelligence of modern AI. We keep things:
-                </p>
-                <ul className="list-disc list-inside mt-2 space-y-1 text-slate-400">
-                  <li>Fast — results in seconds</li>
-                  <li>Accurate — built for trust</li>
-                  <li>Multi-format ready — PDF, DOCX, images, and more</li>
-                  <li>Private — your data stays yours</li>
-                  <li>Simple — no learning curve, no complication</li>
-                </ul>
-                <p className="mt-2">
-                  Our philosophy is straightforward: Powerful tools shouldn't feel complicated. And the future should always respect the past.
-                </p>
-              </section>
-
-              <section>
-                <h3 className="text-blue-400 font-semibold text-lg mb-2">Leadership</h3>
-                <p>
-                  Shahriar, Shukriyan, and Samir guide DocuMind with a grounded mindset — asking tough questions, demanding real results, and refusing shortcuts. Under their leadership, DocuMind aims to become a tool that students, researchers, and everyday learners can rely on for years to come.
-                </p>
-              </section>
-
-              <section>
-                <h3 className="text-blue-400 font-semibold text-lg mb-2">Our Values</h3>
-                <ul className="space-y-2 text-slate-400">
-                  <li><span className="text-emerald-400 font-semibold">Privacy First</span> — Trust is everything. Your documents stay secure, always.</li>
-                  <li><span className="text-emerald-400 font-semibold">Speed With Purpose</span> — Fast isn't enough — fast and useful is the goal.</li>
-                  <li><span className="text-emerald-400 font-semibold">Clarity Over Complexity</span> — No clutter, no confusion. Just insight.</li>
-                  <li><span className="text-emerald-400 font-semibold">Built for People</span> — Designed for real users, real problems, real impact.</li>
-                  <li><span className="text-emerald-400 font-semibold">Empower Learning</span> — Students and researchers deserve tools that make knowledge easier to reach.</li>
-                  <li><span className="text-emerald-400 font-semibold">Always Improving</span> — We respect tradition, but we never stop upgrading.</li>
-                </ul>
-              </section>
-
-              <section>
-                <h3 className="text-blue-400 font-semibold text-lg mb-2">Join Our Team</h3>
-                <p>
-                  We're building the future of document understanding — one tool, one line of code, one idea at a time. If you're someone who loves data, tech, design, or solving meaningful problems, we're excited to meet you. DocuMind AI is more than a platform; it's a growing community of curious thinkers.
-                </p>
-              </section>
-
-              <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700 flex items-center gap-2">
-                <span className="text-lg">📧</span>
-                <a href="mailto:porjectcse1@gmail.com" className="text-blue-400 hover:text-blue-300 underline text-sm font-medium">
-                  porjectcse1@gmail.com
-                </a>
-              </div>
             </div>
 
             <button onClick={() => setShowAbout(false)} className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors mt-6">
@@ -760,7 +826,6 @@ function App() {
         </div>
       )}
 
-      {/* Feedback modal */}
       {showFeedback && (
         <Feedback
           onClose={() => setShowFeedback(false)}
@@ -769,7 +834,6 @@ function App() {
         />
       )}
 
-      {/* Admin feedback viewer (only shows when toggled) */}
       {showAdminFeedback && user && user.isAdmin && (
         <AdminFeedback
           onClose={() => setShowAdminFeedback(false)}
@@ -779,4 +843,10 @@ function App() {
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <SubscriptionProvider>
+      <AppInner />
+    </SubscriptionProvider>
+  );
+}
