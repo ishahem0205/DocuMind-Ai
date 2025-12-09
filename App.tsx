@@ -50,6 +50,7 @@ function AppInner() {
   // Payment modal (pricing flow)
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentPlan, setPaymentPlan] = useState<'standard' | 'pro'>('standard');
+  const [showPricingModal, setShowPricingModal] = useState(false);
 
   // Onboarding & other modals
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -295,7 +296,7 @@ function AppInner() {
         {/* Pricing Section */}
         <div className="w-full max-w-4xl mt-12">
           <h2 className="text-2xl font-bold text-white mb-4">Pricing</h2>
-          <p className="text-slate-400 text-sm mb-6">Choose a plan that fits your workflow — billing shown is a demo only.</p>
+          <p className="text-slate-400 text-sm mb-6">Choose a plan that fits your workflow </p>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="bg-slate-800 p-6 rounded-lg border border-slate-700">
@@ -327,7 +328,7 @@ function AppInner() {
                   <h3 className="text-lg font-semibold text-white">Standard</h3>
                   <p className="text-slate-400 text-sm">For frequent document users</p>
                 </div>
-                <div className="text-2xl font-bold text-blue-400">$9.99</div>
+                            <div className="text-2xl font-bold text-blue-400">Tk 299 / month</div>
               </div>
               <ul className="mt-4 text-slate-300 text-sm space-y-2">
                 <li>• 100 credits / month</li>
@@ -336,7 +337,7 @@ function AppInner() {
               </ul>
               <div className="mt-4">
                 <button
-                  onClick={() => { if (!user) { setAuthMode('signup'); setShowAuth(true); return; } setPaymentPlan('standard'); setShowPaymentModal(true); }}
+                                onClick={() => { if (!user) { setAuthMode('signup'); setShowAuth(true); return; } setShowPricingModal(true); }}
                   className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2 rounded"
                 >
                   Choose Standard
@@ -350,7 +351,7 @@ function AppInner() {
                   <h3 className="text-lg font-semibold text-white">Pro</h3>
                   <p className="text-slate-400 text-sm">For teams and heavy use</p>
                 </div>
-                <div className="text-2xl font-bold text-emerald-400">$19.99</div>
+                            <div className="text-2xl font-bold text-emerald-400">Tk 799 / month</div>
               </div>
               <ul className="mt-4 text-slate-300 text-sm space-y-2">
                 <li>• 1000 credits / month</li>
@@ -359,7 +360,7 @@ function AppInner() {
               </ul>
               <div className="mt-4">
                 <button
-                  onClick={() => { if (!user) { setAuthMode('signup'); setShowAuth(true); return; } setPaymentPlan('pro'); setShowPaymentModal(true); }}
+                                onClick={() => { if (!user) { setAuthMode('signup'); setShowAuth(true); return; } setShowPricingModal(true); }}
                   className="w-full bg-emerald-500 hover:bg-emerald-400 text-black py-2 rounded"
                 >
                   Choose Pro
@@ -512,10 +513,15 @@ function AppInner() {
           {navItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => {
-                setActiveTab(item.id as any);
+                          onClick={() => {
+              if (item.id === 'pricing') {
+                setShowPricingModal(true);
                 setIsSidebarOpen(false);
-              }}
+                return;
+              }
+              setActiveTab(item.id as any);
+              setIsSidebarOpen(false);
+            }}
               title={item.label}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200
                 ${activeTab === item.id
@@ -775,6 +781,19 @@ function AppInner() {
           onClose={() => setShowPaymentModal(false)}
         />
       )}
+        {showPricingModal && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={() => setShowPricingModal(false)} />
+      <div className="relative bg-slate-900 border border-slate-800 rounded-lg w-full max-w-4xl p-4 z-10">
+        <PricingPage onOpenPayment={(plan) => { setPaymentPlan(plan); setShowPaymentModal(true); setShowPricingModal(false); }} />
+        <div className="mt-4 text-right">
+          <button onClick={() => setShowPricingModal(false)} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
 
       {showOnboarding && (
         <Onboarding
